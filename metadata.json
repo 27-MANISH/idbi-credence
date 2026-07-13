@@ -1,0 +1,6 @@
+{
+  "name": "IDBI Credence",
+  "description": "India's AI-powered Financial Health Platform helping MSMEs understand lending readiness and helping financial institutions make evidence-driven decisions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

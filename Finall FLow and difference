@@ -1,0 +1,154 @@
+# FinHealth — MSME Financial Health Card Implementation Plan
+
+This document outlines the architectural differences, technical gap analysis, and the proposed build path to transition the **IDBI Credence** prototype into the production-ready **FinHealth** platform, as specified in your research and PRD documents.
+
+---
+
+## 1. Analysis of the Data Directory Contents
+
+The `data/` directory contains the foundational files defining the problem statement, business strategy, user stories, and presentation structure:
+
+1. **`FinHealth_PRD_SRS.pdf` (Product Requirements Document & Software Requirements Specification)**:
+   * **Scope**: Defines **FinHealth** as an alternate data-driven credit risk assessment scorecard (300-900 scale) for "credit-invisible" MSMEs.
+   * **Core Features**: 5-step MSME Onboarding Wizard, DPDP-compliant Consent Toggles, Multi-Agent Orchestration Engine (GST, UPI, AA, EPFO), SHAP-style Explainability Panel (RBI audit compliant), Credit Officer Underwriting Dashboard, and a Post-Disbursement Portfolio Watchlist.
+   * **Specification**: Outlines a decoupled Next.js 14 (App Router) + FastAPI (Python) + Supabase (Postgres) stack.
+
+2. **`IDBI_Innovate_2026_Track3_Analysis.pdf` (Strategic Track Evaluation)**:
+   * **Rationale**: Outlines why **Track 03 (MSME Financial Health Score)** is the optimal track for the IDBI Innovate 2026 Hackathon.
+   * **Strategic Fit**: Leverages alternate data to address India's $530B MSME credit gap. Integrates with national digital rails (ULI, OCEN, Account Aggregator). 
+   * **Business Case**: NBFC case studies demonstrate that Alternate Data Credit Scoring raises MSME approval rates from **16% to 48%** while reducing Non-Performing Assets (NPAs) from **5.9% to 4.1%**.
+
+3. **`IDBI_PPT_Content_Guide.pdf` & `Prototype Submission Deck.pptx` (Pitch Deck Guidelines)**:
+   * **Structure**: A slide-by-slide guide for the 13-slide submission deck.
+   * **Theme**: Deep navy background (#020617), teal accents (#14b8a6), and amber highlights (#f59e0b) to match a premium banking application.
+
+---
+
+## 2. Comparison: Already Built vs. Planned
+
+Below is a gap analysis comparing the current codebase against the design specs from the PRD.
+
+| Dimension | Current Implementation (`idbi-credence`) | Planned Production Specification (`FinHealth`) | Gap Status |
+| :--- | :--- | :--- | :--- |
+| **Architecture** | Client-Side React 19 Single Page App (SPA) built with Vite. | Decoupled Client-Server: Next.js 14 App Router client, FastAPI backend, Supabase DB. | **Structural Redesign** |
+| **Routing / Pages** | Local React state (`activePage` in `App.tsx` toggling dashboard, wizard, simulator, and workspace). | File-based URL routing: `/msme/onboarding`, `/officer/dashboard`, `/officer/application/[id]`, `/officer/monitoring`. | **Required Migration** |
+| **Data Persistence** | Volatile in-memory state (`baselineCompanies` in `mockCompanies.ts`). Refreshes wipe data. | Persistent PostgreSQL DB (Supabase) storing `profiles`, `scores`, `loans`, `audits`, and `consents`. | **Database Integration** |
+| **Scoring Engine** | Mock state generation in `App.tsx` (`handleSimulationFinished`). | Async FastAPI orchestration calling dedicated python microservice agents with a rule-based capping engine. | **Backend Scoring** |
+| **Explainability** | Static markdown narratives and hardcoded audit logs. | Math-driven SHAP contribution weights calculated on the backend (`/api/v1/score/explain/{id}`). | **Backend Calculation** |
+| **Consent Flow** | Static visual step in onboarding wizard. | Granular consent switches connected to DPDP-compliant consent database tables with audit trails. | **Regulatory DB Hook** |
+| **State Management** | React prop drilling + top-level component state. | Zustand stores (`auth`, `onboarding`, `score`, `officer`, `monitoring`) with `localStorage` persistence. | **Zustand Setup** |
+
+---
+
+## 3. Proposed Production Architecture & Tech Stack
+
+
+```
+                  +------------------------------------------------------+
+                  |                     CLIENT LAYER                     |
+                  |     (Next.js 14 Web Applications & Zustand State)     |
+                  |                                                      |
+                  |  [MSME Onboarding App]    [Officer Underwriting]     |
+                  |               [Portfolio Watchlist]                  |
+                  +--------------------------+---------------------------+
+                                             |
+                                             | HTTP(S) / JSON API Requests
+                                             v
+                  +------------------------------------------------------+
+                  |                     API GATEWAY                      |
+                  |                (FastAPI / Python Web)                |
+                  +-------+------------------+-------------------+-------+
+                          |                  |                   |
+               Auth Flows |    Score Request |       Loan Action |   Monitoring
+                          v                  v                   v           v
+                  +-------+------+   +-------+-------+   +-------+------+   +-----+
+                  |   Profiles   |   |  Scoring      |   |  Loan App    |   |     |
+                  |   & Consents |   |  Orchestrator |   |  & Decisions |   |     |
+                  +-------+------+   +-------+-------+   +-------+------+   +-----+
+                          |                  |                   |             |
+                          |                  | Queries (Async)   |             |
+                          |                  v                   |             |
+                          |          +---------------+           |             |
+                          |          |  GST Agent    |           |             |
+                          |          |  UPI Agent    |           |             |
+                          |          |  AA Agent     |           |             |
+                          |          |  EPFO Agent   |           |             |
+                          |          +---------------+           |             |
+                          |                  |                   |             |
+                          | Writes Profiles  | Writes Scores     | Writes      | Writes
+                          v                  v                   v             v
+                  +-------+------------------+-------------------+-------------+
+                  |                     DATA LAYER                       |
+                  |                (Supabase PostgreSQL)                 |
+                  |      [profiles]  [consents]  [scores]  [loans]  [audits] |
+                  +------------------------------------------------------+
+```
+
+### Architectural Data Flow Summary:
+1. **Frontend to API**: The Next.js 14 frontend acts as a client dashboard. It calls security-signed FastAPI endpoints (under `/api/v1/`) to authorize users, record data consents, trigger calculations, review credit histories, and monitor portfolios.
+2. **Gateway to Orchestrator & Agents**: The FastAPI server hosts a central **Scoring Orchestrator**. When triggered, it spawns 4 parallel sub-threads/processes containing mock API agents representing the GST, UPI, Account Aggregator (AA), and EPFO registries.
+3. **Scoring to DB**: The combined computed scoring matrix, feature signals, and audit trails are persisted directly into the Supabase PostgreSQL database tables.
+
+
+### Production Tech Stack
+1. **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, Zustand, Motion (Framer Motion).
+2. **Backend**: FastAPI (Python), Uvicorn/Gunicorn.
+3. **Agent Orchestration**: LangGraph (Stateful graph execution), LangChain Core, Pydantic (Type-safe data schemas).
+4. **LLM / GenAI**: Google GenAI SDK (`google-genai`) for structured insights and risk explanations.
+5. **Database & Auth**: Supabase PostgreSQL.
+6. **Analytics & Charts**: Custom SVG & Recharts.
+7. **Deployment**: Vercel (Frontend) + Railway or Render (Backend).
+
+---
+
+## 4. Phase-by-Phase Development Path
+
+To deliver the planned solution, we will implement the migration in 4 consecutive phases.
+
+### Phase 1: Database Setup & FastAPI Core API
+1. Spin up a Supabase project.
+2. Initialize tables (`profiles`, `scores`, `loans`, `audits`, `consents`) in Supabase SQL Editor.
+3. Create FastAPI Python application in a `/server` directory:
+   * Setup authentication routers (JWT token generation).
+   * Implement ULI/OCEN-compatible loan request schemas.
+
+### Phase 2: LangGraph Orchestrator & Explainability Backend
+1. **Define the Graph State**: Create a Pydantic-based state class (`AgentState`) containing MSME profile, consent flags, raw parsed records from the four registries, final scores, and explainability payloads.
+2. **Implement Agent Nodes (LangGraph)**:
+   * **GST Agent Node**: Reads GST returns (turnover, filing consistency, growth).
+   * **UPI Agent Node**: Processes cash-flow patterns (transaction counts, merchant velocity).
+   * **AA Agent Node**: Evaluates bank balance consistency, average monthly balance (AMB), and EMI bounces.
+   * **EPFO Agent Node**: Verifies employee roster counts and salary regularity.
+3. **Write the Scoring Orchestrator Node**:
+   * Computes the weighted 300-900 score.
+   * Implements regulatory scoring caps (e.g. if GST filings are inconsistent, cap overall score at 550).
+   * Calculates SHAP feature importance: `Contribution = (Value / 100) * Weight * 900` with positive and negative impacts.
+4. **Implement the Insight/Explainability Node (Google GenAI)**:
+   * Feeds the scoring matrix and metadata to Gemini using `google-genai` SDK.
+   * Generates type-safe natural language summaries of strengths, weaknesses, and a risk report.
+5. **Compile the LangGraph Flow**: Wire the parallel agent nodes and the downstream scoring/insights nodes into a compiled `StateGraph` executed asynchronously.
+
+### Phase 3: Frontend Migration (Next.js 14 App Router)
+1. Initialize a Next.js 14 application.
+2. Port UI designs from the current Vite codebase (copy Tailwind styles and React elements):
+   * `/app/msme/onboarding/page.tsx` (MSME wizard layout).
+   * `/app/officer/dashboard/page.tsx` (Auditor dashboard).
+   * `/app/officer/application/[id]/page.tsx` (Audit Deep-Dive).
+   * `/app/officer/monitoring/page.tsx` (Post-Disbursement watchlist).
+3. Set up Zustand stores with local persistence.
+
+### Phase 4: API Integration & Testing
+1. Replace Vite mock functions with Axios/Fetch clients communicating with the FastAPI backend.
+2. Test end-to-end flow: MSME registers -> consents to GST/UPI/AA/EPFO -> Agent sync progress bar runs -> score computed on database -> displays on health card -> loan applied -> shows in Priya's queue.
+
+---
+
+## 5. Verification Plan
+
+### Automated Verification
+* **FastAPI Endpoint Tests**: Run Python unit tests using `pytest` to assert score calculations, SHAP limits, and database insertion rules.
+* **Type Safety Checks**: Build-time compilation checks using `npm run build` to confirm contract integrity between Next.js and backend models.
+
+### Manual Verification
+* **Borrower Journey**: Complete a simulated registration, toggling data consents, watching the simulated parallel agents run, and verifying that the resulting score correctly maps to the PRD Risk Bands (A+, A, B, C, D).
+* **Officer Override Verification**: Approve a loan in the officer dashboard and verify that the decision is correctly appended to the `audits` table in Supabase.

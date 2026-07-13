@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f7f6f2;
+  --surface: #f9f8f5;
+  --surface-2: #fbfbf9;
+  --text: #28251d;
+  --text-muted: #7a7974;
+  --primary: #01696f;
+  --success: #437a22;
+  --warning: #964219;
+  --error: #a12c7b;
+
+  --background: var(--bg);
+  --foreground: var(--text);
+  
+  --font-sans: 'Outfit', 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+.dark {
+  --bg: #171614;
+  --surface: #1c1b19;
+  --surface-2: #201f1d;
+  --text: #cdccca;
+  --text-muted: #797876;
+  --primary: #4f98a3;
+  --success: #6daa45;
+  --warning: #bb653b;
+  --error: #d163a7;
+
+  --background: var(--bg);
+  --foreground: var(--text);
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
