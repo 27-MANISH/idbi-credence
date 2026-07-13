@@ -1,18 +1,22 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Search, Filter, ShieldCheck, AlertTriangle, AlertCircle,
-  Building2, TrendingUp, ChevronRight, BarChart3, Users, Coins,
-  FileCheck2, RefreshCw, ArrowUpDown, Plus, Activity,
+  Search, ShieldCheck, AlertTriangle, AlertCircle,
+  Building2, BarChart3, Coins, RefreshCw, Plus, Loader2,
 } from 'lucide-react';
 import { useOfficerStore } from '@/stores/useOfficerStore';
+import { useLoansQueue } from '@/lib/useApi';
 import type { Company, VerificationStatus } from '@/types';
 import Link from 'next/link';
 
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
 function StatusBadge({ status }: { status: VerificationStatus }) {
-  const map: Record<VerificationStatus, { cls: string; Icon: any; label: string }> = {
+  const map: Record<VerificationStatus, { cls: string; Icon: React.ElementType; label: string }> = {
     Verified: { cls: 'bg-fin-success/10 text-fin-success border-fin-success/30', Icon: ShieldCheck, label: 'Verified' },
     'Under Review': { cls: 'bg-fin-warning/10 text-fin-warning border-fin-warning/30', Icon: AlertTriangle, label: 'Under Review' },
     'Contradictions Detected': { cls: 'bg-fin-error/10 text-fin-error border-fin-error/30', Icon: AlertCircle, label: 'Contradictions' },
@@ -57,19 +61,77 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
+/** Skeleton placeholder row while data is loading */
+function SkeletonRow() {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr_auto_auto_auto_auto_auto] gap-3 lg:gap-4 items-center px-5 py-4 animate-pulse">
+      <div className="flex items-center gap-2">
+        <div className="w-8 h-8 rounded-lg bg-fin-surface-2" />
+        <div className="w-10 h-10 rounded-full bg-fin-surface-2" />
+      </div>
+      <div className="space-y-1.5">
+        <div className="h-3 w-36 rounded bg-fin-surface-2" />
+        <div className="h-2 w-24 rounded bg-fin-surface-2" />
+      </div>
+      <div className="h-5 w-16 rounded bg-fin-surface-2" />
+      <div className="h-3 w-14 rounded bg-fin-surface-2" />
+      <div className="h-3 w-12 rounded bg-fin-surface-2" />
+      <div className="h-5 w-20 rounded bg-fin-surface-2" />
+      <div className="h-5 w-16 rounded bg-fin-surface-2" />
+    </div>
+  );
+}
+
 const ANALYTICS = [
   { label: 'Total Applications', getValue: (c: Company[]) => c.length, icon: Building2, sub: 'All time' },
   { label: 'Pending Review', getValue: (c: Company[]) => c.filter(x => x.decision === 'PENDING').length, icon: RefreshCw, sub: 'Awaiting action' },
   { label: 'Approved', getValue: (c: Company[]) => c.filter(x => x.decision === 'APPROVED').length, icon: ShieldCheck, sub: 'This cycle' },
-  { label: 'Avg Trust Score', getValue: (c: Company[]) => (c.reduce((a, b) => a + b.trustScore, 0) / c.length).toFixed(1), icon: BarChart3, sub: 'Platform avg' },
+  { label: 'Avg Trust Score', getValue: (c: Company[]) => c.length ? (c.reduce((a, b) => a + b.trustScore, 0) / c.length).toFixed(1) : '—', icon: BarChart3, sub: 'Platform avg' },
   { label: 'Total Capital', getValue: (c: Company[]) => `₹${c.reduce((a, b) => a + b.loanAmount, 0).toFixed(0)} Cr`, icon: Coins, sub: 'Under assessment' },
   { label: 'Contradictions', getValue: (c: Company[]) => c.filter(x => x.status === 'Contradictions Detected').length, icon: AlertTriangle, sub: 'Require attention' },
 ];
 
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
+// Re-fetch throttle: 60 seconds
+const QUEUE_TTL_MS = 60_000;
+
 export default function OfficerDashboardPage() {
   const router = useRouter();
-  const { companies, filters, setFilters, setSelectedCompanyId } = useOfficerStore();
+  const {
+    companies,
+    filters,
+    queueFetchedAt,
+    setFilters,
+    setSelectedCompanyId,
+    mergeFromQueue,
+  } = useOfficerStore();
 
+  const { execute: fetchQueue, loading: queueLoading, error: queueError } = useLoansQueue();
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // ── Fetch real queue on mount (or if TTL expired) ────────────────────────
+  const loadQueue = useCallback(async () => {
+    setFetchError(null);
+    const items = await fetchQueue();
+    if (items && items.length > 0) {
+      mergeFromQueue(items);
+    } else if (!items) {
+      // fetchQueue returned null → error captured in queueError state
+      setFetchError('Backend offline — showing cached/mock data.');
+    }
+  }, [fetchQueue, mergeFromQueue]);
+
+  useEffect(() => {
+    const stale = !queueFetchedAt || Date.now() - queueFetchedAt > QUEUE_TTL_MS;
+    if (stale) {
+      loadQueue();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Filtering ────────────────────────────────────────────────────────────
   const industries = Array.from(new Set(companies.map(c => c.industry)));
 
   const filtered = companies.filter(c => {
@@ -85,7 +147,14 @@ export default function OfficerDashboardPage() {
   const getInitials = (name: string) => name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
 
   const industryColor = (ind: string) => {
-    const map: Record<string, string> = { Textiles: 'bg-rose-50 text-rose-700', Logistics: 'bg-blue-50 text-blue-700', Healthcare: 'bg-teal-50 text-teal-700', Engineering: 'bg-orange-50 text-orange-700', Technology: 'bg-indigo-50 text-indigo-700', Agriculture: 'bg-emerald-50 text-emerald-700' };
+    const map: Record<string, string> = {
+      Textiles: 'bg-rose-50 text-rose-700',
+      Logistics: 'bg-blue-50 text-blue-700',
+      Healthcare: 'bg-teal-50 text-teal-700',
+      Engineering: 'bg-orange-50 text-orange-700',
+      Technology: 'bg-indigo-50 text-indigo-700',
+      Agriculture: 'bg-emerald-50 text-emerald-700',
+    };
     return map[ind] ?? 'bg-slate-50 text-slate-700';
   };
 
@@ -97,16 +166,37 @@ export default function OfficerDashboardPage() {
           <h1 className="text-2xl font-black text-fin-text">Credit Officer Console</h1>
           <p className="text-[12px] text-fin-text-muted mt-0.5">AI-ranked underwriting queue · IDBI Bank Credit Desk</p>
         </div>
-        <Link
-          href="/msme/onboarding"
-          id="btn-new-application"
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-bold text-white rounded-xl hover:brightness-110 transition-all"
-          style={{ backgroundColor: 'var(--primary)' }}
-        >
-          <Plus className="h-4 w-4" />
-          New Application
-        </Link>
+        <div className="flex items-center gap-3">
+          {/* Manual refresh button */}
+          <button
+            id="btn-refresh-queue"
+            onClick={loadQueue}
+            disabled={queueLoading}
+            title="Refresh queue from backend"
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-mono font-bold text-fin-text bg-fin-surface border border-gray-200/50 rounded-xl hover:bg-fin-surface-2 disabled:opacity-50 transition-all"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${queueLoading ? 'animate-spin' : ''}`} />
+            {queueLoading ? 'Syncing…' : 'Refresh'}
+          </button>
+          <Link
+            href="/msme/onboarding"
+            id="btn-new-application"
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-bold text-white rounded-xl hover:brightness-110 transition-all"
+            style={{ backgroundColor: 'var(--primary)' }}
+          >
+            <Plus className="h-4 w-4" />
+            New Application
+          </Link>
+        </div>
       </div>
+
+      {/* API status banner */}
+      {(fetchError || queueError) && (
+        <div className="mb-4 flex items-center gap-2 bg-fin-warning/10 border border-fin-warning/30 text-fin-warning rounded-xl px-4 py-2 text-[11px] font-mono">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {fetchError ?? queueError} Showing local/mock data.
+        </div>
+      )}
 
       {/* Analytics bar */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
@@ -172,7 +262,22 @@ export default function OfficerDashboardPage() {
           <span>Decision</span>
         </div>
 
-        {sorted.length === 0 && (
+        {/* Skeleton rows while loading */}
+        {queueLoading && companies.length === 0 && (
+          <div className="divide-y divide-gray-200/30">
+            {[1, 2, 3, 4].map(i => <SkeletonRow key={i} />)}
+          </div>
+        )}
+
+        {/* Inline loading indicator (queue has cached data but is refreshing) */}
+        {queueLoading && companies.length > 0 && (
+          <div className="flex items-center gap-2 px-5 py-2 border-b border-gray-200/20 text-[10px] font-mono text-fin-text-muted bg-fin-surface-2/50">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Syncing with backend…
+          </div>
+        )}
+
+        {!queueLoading && sorted.length === 0 && (
           <div className="py-16 text-center">
             <Building2 className="h-8 w-8 mx-auto text-fin-text-muted mb-3 opacity-40" />
             <p className="text-sm text-fin-text-muted">No applications match your filters.</p>
@@ -187,7 +292,7 @@ export default function OfficerDashboardPage() {
               onClick={() => { setSelectedCompanyId(company.id); router.push(`/officer/application/${company.id}`); }}
               className="grid grid-cols-1 lg:grid-cols-[auto_1fr_auto_auto_auto_auto_auto] gap-3 lg:gap-4 items-center px-5 py-4 cursor-pointer hover:bg-fin-surface-2 transition-colors group"
             >
-              {/* Avatar + score */}
+              {/* Avatar + score ring */}
               <div className="flex items-center gap-3 lg:block">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 rounded-lg font-black text-xs text-white flex items-center justify-center shrink-0" style={{ backgroundColor: 'var(--primary)' }}>
@@ -197,7 +302,7 @@ export default function OfficerDashboardPage() {
                 </div>
               </div>
 
-              {/* Name */}
+              {/* Name + GSTIN */}
               <div className="min-w-0">
                 <div className="font-bold text-sm text-fin-text truncate group-hover:text-fin-primary transition-colors">{company.name}</div>
                 <div className="text-[10px] font-mono text-fin-text-muted truncate">{company.gstin}</div>
