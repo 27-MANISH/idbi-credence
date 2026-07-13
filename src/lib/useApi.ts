@@ -12,6 +12,7 @@ import {
   ApiError,
   type Token,
   type UserOut,
+  type ProfileCreate,
   type OnboardingRequest,
   type OnboardingResponse,
   type ScoreComputeRequest,

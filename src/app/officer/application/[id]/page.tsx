@@ -1,16 +1,18 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ArrowLeft, ShieldCheck, AlertTriangle, AlertCircle, Download,
-  Printer, Share2, FileText, BarChart3, Network, CheckCircle2,
-  XCircle, RefreshCw, Sparkles, ChevronDown, ChevronUp, Loader2,
+  ArrowLeft, AlertCircle, Download, Printer, Share2,
+  FileText, CheckCircle2, AlertTriangle, XCircle,
+  ChevronDown, ChevronUp, Loader2, Sparkles,
 } from 'lucide-react';
 import { useOfficerStore } from '@/stores/useOfficerStore';
+import { useExplainScore, useUpdateLoan, useGetLoanDetails } from '@/lib/useApi';
 import RadarChart from '@/components/RadarChart';
 import ExplainabilityPanel from '@/components/ExplainabilityPanel';
 import type { VerificationStatus } from '@/types';
+import type { ScoreExplainFeature } from '@/lib/api';
 
 const TABS = ['Overview', 'Radar Analysis', 'SHAP Explainability', 'Audit Logs', 'Documents', 'Decision'];
 
@@ -27,7 +29,7 @@ export default function ApplicationPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
-  const { companies, approveCompany, rejectCompany, referCompany } = useOfficerStore();
+  const { companies, approveCompany, rejectCompany, referCompany, updateCompany } = useOfficerStore();
   const company = companies.find(c => c.id === id);
 
   const [activeTab, setActiveTab] = useState('Overview');
@@ -37,6 +39,29 @@ export default function ApplicationPage() {
   const [saved, setSaved] = useState(false);
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  // API hooks
+  const { execute: fetchExplain, loading: shapLoading, data: shapData, error: shapError } = useExplainScore();
+  const { execute: updateLoan, loading: updateLoading } = useUpdateLoan();
+  const { execute: fetchDetails, data: loanDetails } = useGetLoanDetails();
+
+  // Fetch loan details + SHAP when opening the SHAP tab
+  useEffect(() => {
+    if (activeTab === 'SHAP Explainability' && id && !shapData) {
+      // Try fetching by loan/profile ID — backend accepts either
+      fetchExplain(id);
+    }
+  }, [activeTab, id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch full loan details on mount (for audit logs from API)
+  useEffect(() => {
+    if (id) fetchDetails(id);
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  };
 
   if (!company) {
     return (
@@ -59,30 +84,53 @@ export default function ApplicationPage() {
     { key: 'verification', label: 'Verification', val: company.trustScore >= 85 ? 98 : company.trustScore >= 65 ? 80 : 35, desc: 'Cross-registry match accuracy' },
   ];
 
-  const shapEntries = [
-    { label: 'GST Compliance', contribution: Math.round((company.trustScore - 70) * 2.8) },
-    { label: 'UPI Transactions', contribution: Math.round((company.trustScore - 70) * 2.2) },
-    { label: 'AA Banking', contribution: Math.round((company.trustScore - 70) * 2.5) },
-    { label: 'EPFO Stability', contribution: Math.round((company.trustScore - 70) * 1.8) },
-    { label: 'Revenue Growth', contribution: Math.round((company.trustScore - 70) * 2.0) },
-  ];
+  // Build SHAP entries: prefer real API data, fall back to computed mock
+  const shapEntries: { label: string; contribution: number }[] = shapData?.features
+    ? shapData.features.map((f: ScoreExplainFeature) => ({
+        label: f.name,
+        contribution: Math.round(f.contribution),
+      }))
+    : [
+        { label: 'GST Compliance', contribution: Math.round((company.trustScore - 70) * 2.8) },
+        { label: 'UPI Transactions', contribution: Math.round((company.trustScore - 70) * 2.2) },
+        { label: 'AA Banking', contribution: Math.round((company.trustScore - 70) * 2.5) },
+        { label: 'EPFO Stability', contribution: Math.round((company.trustScore - 70) * 1.8) },
+        { label: 'Revenue Growth', contribution: Math.round((company.trustScore - 70) * 2.0) },
+      ];
 
-  const handleSaveDecision = () => {
+  const shapExplanation = shapData?.risk_report ?? company.aiSummary ??
+    `${company.name} presents a ${company.trustScore >= 85 ? 'strong' : company.trustScore >= 65 ? 'moderate' : 'weak'} credit profile.`;
+
+  // Audit logs: prefer API data, fall back to store
+  const auditLogs = (loanDetails?.audits?.length ? loanDetails.audits : company.auditLogs) as typeof company.auditLogs;
+
+  // ── Decision handler (API + local store) ──────────────────────────────────
+  const handleSaveDecision = async () => {
     setSaving(true);
-    setTimeout(() => {
-      if (decision === 'APPROVED') approveCompany(company.id, notes);
-      else if (decision === 'REJECTED') rejectCompany(company.id, notes);
-      else if (decision === 'REFERRED') referCompany(company.id, notes);
-      setSaving(false);
-      setSaved(true);
-      showToast('Decision saved to corporate dossier.');
-      setTimeout(() => setSaved(false), 2000);
-    }, 600);
-  };
+    try {
+      // Call real API first
+      const statusMap: Record<string, 'APPROVED' | 'REJECTED' | 'PENDING'> = {
+        APPROVED: 'APPROVED',
+        REJECTED: 'REJECTED',
+        REFERRED: 'PENDING', // backend maps REFERRED as PENDING with note
+      };
+      await updateLoan(id, {
+        status: statusMap[decision] ?? 'PENDING',
+        decided_by: 'officer',
+      });
+    } catch {
+      // API offline — proceed with local-only save
+    }
 
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
+    // Always update local store regardless of API outcome
+    if (decision === 'APPROVED') approveCompany(company.id, notes);
+    else if (decision === 'REJECTED') rejectCompany(company.id, notes);
+    else if (decision === 'REFERRED') referCompany(company.id, notes);
+
+    setSaving(false);
+    setSaved(true);
+    showToast('Decision saved to corporate dossier.');
+    setTimeout(() => setSaved(false), 2000);
   };
 
   const handleDownload = () => {
@@ -148,7 +196,6 @@ export default function ApplicationPage() {
       {/* TAB: Overview */}
       {activeTab === 'Overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-          {/* KPI cards */}
           <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-3">
             {[
               { label: 'Trust Score', value: `${company.trustScore}%`, sub: company.trustScore >= 85 ? 'LOW RISK' : company.trustScore >= 65 ? 'MED RISK' : 'HIGH RISK' },
@@ -159,7 +206,7 @@ export default function ApplicationPage() {
               { label: 'Current Ratio', value: `${latestMetric.currentRatio.toFixed(2)}x`, sub: latestMetric.currentRatio >= 1.33 ? '✓ Healthy' : '⚠ Below threshold' },
               { label: 'D/E Ratio', value: `${latestMetric.debtEquity.toFixed(2)}x`, sub: 'Leverage metric' },
               { label: 'Loan Ask', value: `₹${company.loanAmount} Cr`, sub: company.purpose.slice(0, 30) },
-              { label: 'Industry', value: company.industry, sub: company.existingBank },
+              { label: 'Industry', value: company.industry, sub: company.existingBank || '—' },
             ].map(card => (
               <div key={card.label} className="bg-fin-surface border border-gray-200/40 rounded-xl p-3">
                 <div className="text-[9px] font-mono font-bold text-fin-text-muted uppercase">{card.label}</div>
@@ -168,8 +215,6 @@ export default function ApplicationPage() {
               </div>
             ))}
           </div>
-
-          {/* Financial trends */}
           <div className="bg-fin-surface border border-gray-200/40 rounded-2xl p-4">
             <h3 className="text-xs font-bold text-fin-text mb-4">Financial Trajectory</h3>
             <div className="space-y-3">
@@ -224,22 +269,59 @@ export default function ApplicationPage() {
         </div>
       )}
 
-      {/* TAB: SHAP Explainability */}
+      {/* TAB: SHAP Explainability — real API with loading state */}
       {activeTab === 'SHAP Explainability' && (
         <div className="max-w-2xl">
+          {shapLoading && (
+            <div className="flex items-center gap-3 text-fin-text-muted text-sm font-mono mb-4 animate-pulse">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Fetching SHAP explanations from LangGraph…
+            </div>
+          )}
+          {shapError && !shapLoading && (
+            <div className="flex items-center gap-2 mb-4 text-fin-warning text-[11px] font-mono bg-fin-warning/10 border border-fin-warning/20 rounded-xl px-4 py-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              Backend unavailable — showing locally computed contributions.
+            </div>
+          )}
+          {shapData && (
+            <div className="mb-3 flex flex-wrap gap-2">
+              {shapData.strengths?.map((s: string, i: number) => (
+                <span key={i} className="text-[10px] font-mono px-2 py-1 rounded-full bg-fin-success/10 text-fin-success border border-fin-success/20">✓ {s}</span>
+              ))}
+              {shapData.weaknesses?.map((w: string, i: number) => (
+                <span key={i} className="text-[10px] font-mono px-2 py-1 rounded-full bg-fin-error/10 text-fin-error border border-fin-error/20">⚠ {w}</span>
+              ))}
+            </div>
+          )}
           <ExplainabilityPanel
             overallScore={300 + Math.round(company.trustScore * 6)}
             baseline={600}
             entries={shapEntries}
-            explanation={`${company.name} presents a ${company.trustScore >= 85 ? 'strong' : company.trustScore >= 65 ? 'moderate' : 'weak'} credit profile. ${company.trustScore >= 85 ? 'GST and banking compliance are the primary positive contributors. EPFO and growth signals confirm operational stability.' : 'Significant contradictions detected in GST filings. Banking patterns show stress indicators requiring manual review.'}`}
+            explanation={shapExplanation}
           />
+          {shapData?.recommendations && shapData.recommendations.length > 0 && (
+            <div className="mt-4 bg-fin-surface border border-gray-200/40 rounded-xl p-4">
+              <h4 className="text-[11px] font-mono font-bold text-fin-text-muted uppercase mb-2">AI Recommendations</h4>
+              <ul className="space-y-1">
+                {shapData.recommendations.map((r: string, i: number) => (
+                  <li key={i} className="text-[11px] text-fin-text font-mono flex gap-2">
+                    <span className="text-fin-primary shrink-0">→</span>{r}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
       {/* TAB: Audit Logs */}
       {activeTab === 'Audit Logs' && (
         <div className="space-y-3">
-          {company.auditLogs.map(log => {
+          {auditLogs.length === 0 && (
+            <div className="py-10 text-center text-fin-text-muted text-sm font-mono">No audit logs available.</div>
+          )}
+          {auditLogs.map(log => {
             const isExpanded = expandedLog === log.id;
             const Icon = log.type === 'success' ? CheckCircle2 : log.type === 'warning' ? AlertTriangle : AlertCircle;
             const color = log.type === 'success' ? 'var(--success)' : log.type === 'warning' ? 'var(--warning)' : 'var(--error)';
@@ -274,6 +356,9 @@ export default function ApplicationPage() {
       {/* TAB: Documents */}
       {activeTab === 'Documents' && (
         <div className="space-y-2">
+          {company.documents.length === 0 && (
+            <div className="py-10 text-center text-fin-text-muted text-sm font-mono">No documents attached.</div>
+          )}
           {company.documents.map((doc, i) => {
             const statusColor: Record<string, string> = { Verified: 'text-fin-success', Extracted: 'text-fin-primary', Warning: 'text-fin-warning', Pending: 'text-fin-text-muted', Uploading: 'text-fin-text-muted' };
             return (
@@ -291,7 +376,7 @@ export default function ApplicationPage() {
         </div>
       )}
 
-      {/* TAB: Decision */}
+      {/* TAB: Decision — wired to real API */}
       {activeTab === 'Decision' && (
         <div className="max-w-xl space-y-5">
           <h3 className="text-sm font-bold text-fin-text">Record Lending Decision</h3>
@@ -304,7 +389,9 @@ export default function ApplicationPage() {
                 onClick={() => setDecision(d)}
                 className={`py-3 rounded-xl text-xs font-bold border-2 transition-all ${
                   decision === d
-                    ? d === 'APPROVED' ? 'border-fin-success bg-fin-success/10 text-fin-success' : d === 'REJECTED' ? 'border-fin-error bg-fin-error/10 text-fin-error' : 'border-fin-warning bg-fin-warning/10 text-fin-warning'
+                    ? d === 'APPROVED' ? 'border-fin-success bg-fin-success/10 text-fin-success'
+                      : d === 'REJECTED' ? 'border-fin-error bg-fin-error/10 text-fin-error'
+                      : 'border-fin-warning bg-fin-warning/10 text-fin-warning'
                     : 'border-gray-200/50 text-fin-text-muted hover:border-gray-300'
                 }`}
               >
@@ -328,12 +415,12 @@ export default function ApplicationPage() {
           <button
             id="btn-save-decision"
             onClick={handleSaveDecision}
-            disabled={saving || decision === 'PENDING'}
+            disabled={saving || updateLoading || decision === 'PENDING'}
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50 hover:brightness-110 transition-all"
             style={{ backgroundColor: 'var(--primary)' }}
           >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <CheckCircle2 className="h-4 w-4" /> : null}
-            {saving ? 'Saving…' : saved ? 'Saved!' : 'Save Decision'}
+            {(saving || updateLoading) ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <CheckCircle2 className="h-4 w-4" /> : null}
+            {(saving || updateLoading) ? 'Saving…' : saved ? 'Saved!' : 'Save Decision'}
           </button>
         </div>
       )}

@@ -179,7 +179,13 @@ export default function OnboardingPage() {
             epfo: featureMap['epfo'] ?? dims.epfo,
             growth: featureMap['growth'] ?? dims.growth,
           },
-          shapContributions: shapMap,
+          shapContributions: {
+            gst:     shapMap['gst']    ?? dims.gst,
+            upi:     shapMap['upi']    ?? dims.upi,
+            banking: shapMap['aa']     ?? dims.banking,
+            epfo:    shapMap['epfo']   ?? dims.epfo,
+            growth:  shapMap['growth'] ?? dims.growth,
+          },
         });
       }
     } else {
